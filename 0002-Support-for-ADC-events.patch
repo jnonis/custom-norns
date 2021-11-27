@@ -1,0 +1,209 @@
+From c99e0c15f9a510d6f3ed6cb00fb93ff21065c135 Mon Sep 17 00:00:00 2001
+From: jnonis <javiernonis@gmail.com>
+Date: Sun, 28 Nov 2021 05:27:43 +0700
+Subject: [PATCH 2/2] Support for ADC events
+
+---
+ lua/core/grid.lua                 | 25 +++++++++++++++++++++++++
+ matron/src/device/device_monome.c | 13 +++++++++++++
+ matron/src/event_types.h          | 12 ++++++++++++
+ matron/src/events.c               |  3 +++
+ matron/src/weaver.c               | 10 ++++++++++
+ matron/src/weaver.h               |  1 +
+ 6 files changed, 64 insertions(+)
+
+diff --git a/lua/core/grid.lua b/lua/core/grid.lua
+index e4aec04..d9db683 100644
+--- a/lua/core/grid.lua
++++ b/lua/core/grid.lua
+@@ -15,6 +15,7 @@ for i=1,4 do
+     device = nil,
+ 
+     key = nil,
++    tilt = nil,
+ 
+     led = vport.wrap_method('led'),
+     all = vport.wrap_method('all'),
+@@ -40,6 +41,7 @@ function Grid.new(id, serial, name, dev)
+   g.name = name.." "..serial
+   g.dev = dev -- opaque pointer
+   g.key = nil -- key event callback
++  g.tilt = nil -- tilt event callback
+   g.remove = nil -- device unplug callback
+   g.rows = _norns.grid_rows(dev)
+   g.cols = _norns.grid_cols(dev)
+@@ -120,12 +122,14 @@ end
+ function Grid.cleanup()
+   for i=1,4 do
+     Grid.vports[i].key = nil
++    Grid.vports[i].tilt = nil
+   end
+ 
+   for _, dev in pairs(Grid.devices) do
+     dev:all(0)
+     dev:refresh()
+     dev.key = nil
++    dev.tilt = nil
+   end
+ end
+ 
+@@ -198,6 +202,25 @@ _norns.grid.key = function(id, x, y, s)
+   end
+ end
+ 
++-- redefine global tilt input handler
++_norns.grid.tilt = function(id, x, y, z, k)
++  local g = Grid.devices[id]
++  if g ~= nil then
++    if g.tilt ~= nil then
++      g.tilt(x, y, z, k)
++    end
++
++    if g.port then
++      if Grid.vports[g.port].tilt then
++        Grid.vports[g.port].tilt(x, y, z, k)
++      end
++    end
++  else
++    error('no entry for grid '..id)
++  end
++end
++
++
+ Grid.help = [[
+ --------------------------------------------------------------------------------
+ grid.connect( port )          create a grid table using device [port]
+@@ -205,6 +228,8 @@ grid.connect( port )          create a grid table using device [port]
+                               (returns) grid table
+ .key( x, y, z )               function called with incoming grid key event
+                                 this should be redefined by the script
++.tilt( x, y, z, k )           function called with incoming tilt event
++                                this should be redefined by the script
+ .led( x, y, level )           set LED at [x,y] to [level]
+                                 [level] range is 0..15
+ .all( level )                 set all grid LED to [level]
+diff --git a/matron/src/device/device_monome.c b/matron/src/device/device_monome.c
+index 5b6e17a..d844201 100644
+--- a/matron/src/device/device_monome.c
++++ b/matron/src/device/device_monome.c
+@@ -21,6 +21,7 @@ static void dev_monome_handle_lift(const monome_event_t *e, void *p);
+ static void dev_monome_handle_encoder_delta(const monome_event_t *e, void *p);
+ static void dev_monome_handle_encoder_press(const monome_event_t *e, void *p);
+ static void dev_monome_handle_encoder_lift(const monome_event_t *e, void *p);
++static void dev_monome_handle_tilt(const monome_event_t *e, void *p);
+ 
+ //-------------------------
+ //--- monome device class
+@@ -65,6 +66,7 @@ int dev_monome_init(void *self) {
+     monome_register_handler(m, MONOME_ENCODER_DELTA, dev_monome_handle_encoder_delta, md);
+     monome_register_handler(m, MONOME_ENCODER_KEY_DOWN, dev_monome_handle_encoder_press, md);
+     monome_register_handler(m, MONOME_ENCODER_KEY_UP, dev_monome_handle_encoder_lift, md);
++    monome_register_handler(m, MONOME_TILT, dev_monome_handle_tilt, md);
+ 
+     // drop the name set by udev and use libmonome-provided name
+     free(base->name);
+@@ -193,6 +195,17 @@ void dev_monome_handle_encoder_lift(const monome_event_t *e, void *p) {
+     event_post(ev);
+ }
+ 
++void dev_monome_handle_tilt(const monome_event_t *e, void *p) {
++    struct dev_monome *md = (struct dev_monome *)p;
++    union event_data *ev = event_data_new(EVENT_TILT);
++    ev->tilt.id = md->dev.id;
++    ev->tilt.x = e->tilt.x;
++    ev->tilt.y = e->tilt.y;
++    ev->tilt.z = e->tilt.z;
++    ev->tilt.k = e->tilt.k;
++    event_post(ev);
++}
++
+ int dev_monome_grid_rows(struct dev_monome *md) {
+     return monome_get_rows(md->m);
+ }
+diff --git a/matron/src/event_types.h b/matron/src/event_types.h
+index 53fd5a3..8609b9f 100644
+--- a/matron/src/event_types.h
++++ b/matron/src/event_types.h
+@@ -33,6 +33,8 @@ typedef enum {
+     EVENT_MONOME_REMOVE,
+     // monome grid press/lift
+     EVENT_GRID_KEY,
++    // monome grid tilt
++    EVENT_TILT,
+     // monome arc encoder delta
+     EVENT_ARC_ENCODER_DELTA,
+     // monome arc encoder key
+@@ -127,6 +129,15 @@ struct event_grid_key {
+     uint8_t state;
+ }; // +4
+ 
++struct event_tilt {
++    struct event_common common;
++    uint8_t id;
++    uint16_t x;
++    uint16_t y;
++    uint16_t z;
++    uint16_t k;
++}; // +4
++
+ struct event_arc_encoder_delta {
+     struct event_common common;
+     uint8_t id;
+@@ -331,6 +342,7 @@ union event_data {
+     struct event_monome_add monome_add;
+     struct event_monome_remove monome_remove;
+     struct event_grid_key grid_key;
++    struct event_tilt tilt;
+     struct event_arc_encoder_delta arc_encoder_delta;
+     struct event_arc_encoder_key arc_encoder_key;
+     struct event_hid_add hid_add;
+diff --git a/matron/src/events.c b/matron/src/events.c
+index fbf8119..cf9af65 100644
+--- a/matron/src/events.c
++++ b/matron/src/events.c
+@@ -228,6 +228,9 @@ static void handle_event(union event_data *ev) {
+     case EVENT_GRID_KEY:
+         w_handle_grid_key(ev->grid_key.id, ev->grid_key.x, ev->grid_key.y, ev->grid_key.state);
+         break;
++    case EVENT_TILT:
++        w_handle_tilt(ev->tilt.id, ev->tilt.x, ev->tilt.y, ev->tilt.z, ev->tilt.k);
++        break;
+     case EVENT_ARC_ENCODER_DELTA:
+         w_handle_arc_encoder_delta(ev->arc_encoder_delta.id, ev->arc_encoder_delta.number, ev->arc_encoder_delta.delta);
+         break;
+diff --git a/matron/src/weaver.c b/matron/src/weaver.c
+index ecf5ed8..1b5c642 100644
+--- a/matron/src/weaver.c
++++ b/matron/src/weaver.c
+@@ -1637,6 +1637,16 @@ void w_handle_grid_key(int id, int x, int y, int state) {
+     _call_grid_handler(id, x, y, state > 0);
+ }
+ 
++void w_handle_tilt(int id, int x, int y, int z, int k) {
++    _push_norns_func("grid", "tilt");
++    lua_pushinteger(lvm, id + 1); // convert to 1-base
++    lua_pushinteger(lvm, x + 1);  // convert to 1-base
++    lua_pushinteger(lvm, y + 1);  // convert to 1-base
++    lua_pushinteger(lvm, z + 1);
++    lua_pushinteger(lvm, k + 1);
++    l_report(lvm, l_docall(lvm, 5, 0));
++}
++
+ void w_handle_arc_encoder_delta(int id, int n, int delta) {
+     _push_norns_func("arc", "delta");
+     lua_pushinteger(lvm, id + 1); // convert to 1-base
+diff --git a/matron/src/weaver.h b/matron/src/weaver.h
+index e1d0e07..d661f94 100644
+--- a/matron/src/weaver.h
++++ b/matron/src/weaver.h
+@@ -33,6 +33,7 @@ extern void w_reset_lvm();
+ extern void w_handle_monome_add(void *dev);
+ extern void w_handle_monome_remove(int id);
+ extern void w_handle_grid_key(int id, int x, int y, int state);
++extern void w_handle_tilt(int id, int x, int y, int z, int k);
+ extern void w_handle_arc_encoder_delta(int id, int number, int delta);
+ extern void w_handle_arc_encoder_key(int id, int number, int state);
+ 
+-- 
+2.11.0
+

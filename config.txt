@@ -1,0 +1,42 @@
+# Disable overscan assuming the display supports displaying the full resolution
+# If the text shown on the screen disappears off the edge, comment this out
+disable_overscan=1
+
+# How much memory in MB to assign to the GPU on Pi models having
+# 256, 512 or 1024 MB total memory
+gpu_mem_256=100
+gpu_mem_512=100
+gpu_mem_1024=100
+
+# Display
+# Connected using SPI
+dtparam=spi=on
+dtoverlay=norns-ili9341:rotate=90,fps=60,speed=90000000
+#dtoverlay=tft35a:rotate=270,speed=21000000,fps=30
+#dtoverlay=ssd1322-spi
+#dtparam=rotate=180
+
+# Soundcard
+# Connected using I2S
+# CS4270 codec used by soundcard connected using I2C
+dtparam=i2s=on
+dtparam=i2c=on
+#dtoverlay=monome-snd
+dtoverlay=iqaudio-codec
+
+# Buttons and encoders
+#dtoverlay=norns-encoders
+dtoverlay=norns-buttons-encoders
+dtparam=e1_pin_a=27
+dtparam=e1_pin_b=4
+dtparam=e2_pin_a=23
+dtparam=e2_pin_b=24
+dtparam=e3_pin_a=25
+dtparam=e3_pin_b=12
+dtparam=b1_pin=22
+dtparam=b2_pin=26
+dtparam=b3_pin=16
+#i2c=i2c_arm=on
+
+kernel=kernel7-jnonis.img
+#kernel=kernel-4.19.127-16-gb1425b1.img
